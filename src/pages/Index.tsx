@@ -1,13 +1,21 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { motion } from "framer-motion";
+import { MarketPulse } from "@/components/dashboard/MarketPulse";
+import { IntelligenceFeed } from "@/components/dashboard/IntelligenceFeed";
+import { NewsRelationshipCloud } from "@/components/dashboard/NewsRelationshipCloud";
+import { MarketMovers } from "@/components/dashboard/MarketMovers";
 
 const Index = () => {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3 }}
+    >
+      <MarketPulse />
+      <IntelligenceFeed />
+      <MarketMovers />
+      <NewsRelationshipCloud />
+    </motion.div>
   );
 };
 
