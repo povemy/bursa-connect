@@ -1,17 +1,57 @@
-const pulseCards = [
-  { label: "KLCI Index", value: "1,623.45", change: "+0.42%", positive: true },
-  { label: "Top Gainers", value: "12.5%", change: "Avg", positive: true },
-  { label: "Top Losers", value: "8.2%", change: "Avg", positive: false },
-  { label: "Alerts Today", value: "1,240", change: "High", positive: null },
-];
+import { useQuery } from "@tanstack/react-query";
+import { bursaApi, formatChange } from "@/lib/api/bursa";
 
 export function MarketPulse() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['market-overview'],
+    queryFn: () => bursaApi.getMarketOverview(),
+    refetchInterval: 60000, // refresh every minute
+    staleTime: 30000,
+  });
+
+  const klci = data?.klci;
+  const quotes = data?.quotes || [];
+
+  // Calculate top gainers avg and top losers avg
+  const gainers = quotes.filter(q => q.regularMarketChangePercent > 0).sort((a, b) => b.regularMarketChangePercent - a.regularMarketChangePercent);
+  const losers = quotes.filter(q => q.regularMarketChangePercent < 0).sort((a, b) => a.regularMarketChangePercent - b.regularMarketChangePercent);
+  const topGainerAvg = gainers.length > 0 ? gainers.slice(0, 5).reduce((sum, q) => sum + q.regularMarketChangePercent, 0) / Math.min(5, gainers.length) : 0;
+  const topLoserAvg = losers.length > 0 ? Math.abs(losers.slice(0, 5).reduce((sum, q) => sum + q.regularMarketChangePercent, 0) / Math.min(5, losers.length)) : 0;
+
+  const pulseCards = [
+    {
+      label: "KLCI Index",
+      value: klci ? klci.price.toLocaleString(undefined, { minimumFractionDigits: 2 }) : isLoading ? "..." : "N/A",
+      change: klci ? formatChange(klci.changePct) : "",
+      positive: klci ? klci.changePct >= 0 : true,
+    },
+    {
+      label: "Top Gainers",
+      value: topGainerAvg > 0 ? `${topGainerAvg.toFixed(1)}%` : isLoading ? "..." : "0%",
+      change: `${gainers.length} stocks`,
+      positive: true,
+    },
+    {
+      label: "Top Losers",
+      value: topLoserAvg > 0 ? `${topLoserAvg.toFixed(1)}%` : isLoading ? "..." : "0%",
+      change: `${losers.length} stocks`,
+      positive: false,
+    },
+    {
+      label: "Active Stocks",
+      value: quotes.length > 0 ? String(quotes.length) : isLoading ? "..." : "0",
+      change: "Tracked",
+      positive: null as boolean | null,
+    },
+  ];
+
   return (
     <section className="mt-6">
       <div className="px-4 mb-3 flex items-center justify-between">
         <h2 className="text-xs font-bold text-muted-foreground uppercase tracking-widest">Market Pulse</h2>
         <span className="text-[10px] text-primary flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" /> LIVE
+          <span className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+          {isLoading ? "LOADING" : "DELAYED"}
         </span>
       </div>
       <div className="flex gap-3 overflow-x-auto px-4 pb-2 hide-scrollbar">
