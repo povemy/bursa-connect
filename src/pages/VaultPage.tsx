@@ -14,19 +14,19 @@ export default function VaultPage() {
   const quotes = data?.quotes || [];
   const tickers = data?.tickers || [];
 
-  // Show top stocks sorted by absolute change
+  // Show top stocks sorted by volume
   const watchlist = quotes
     .map(q => {
       const ticker = tickers.find(t => t.symbol === q.symbol);
       return { ...q, name: ticker?.name || q.shortName, sector: ticker?.sector || "Unknown" };
     })
-    .sort((a, b) => Math.abs(b.regularMarketChangePercent) - Math.abs(a.regularMarketChangePercent))
+    .sort((a, b) => b.regularMarketVolume - a.regularMarketVolume)
     .slice(0, 10);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-4 pt-4">
-      <h1 className="text-lg font-bold mb-2">Vault — Watchlist</h1>
-      <p className="text-xs text-muted-foreground mb-6">Top movers from tracked Bursa stocks (delayed data)</p>
+      <h1 className="text-lg font-bold mb-2">Vault — Top Volume</h1>
+      <p className="text-xs text-muted-foreground mb-6">Highest volume Bursa stocks today (delayed data)</p>
 
       {isLoading && (
         <div className="text-center py-8">
