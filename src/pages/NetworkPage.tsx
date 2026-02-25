@@ -1,48 +1,182 @@
-import { useState } from "react";
-import { motion } from "framer-motion";
+import { useState, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { motion, AnimatePresence } from "framer-motion";
+import { bursaApi, type ForensicData } from "@/lib/api/bursa";
 
-const nodes = [
-  { id: "main", label: "MAIN CORP BHD", type: "listed", x: 50, y: 50, icon: "corporate_fare", code: "1022" },
-  { id: "sub1", label: "Sub-Holdings", type: "listed", x: 22, y: 32, icon: "business", pct: "60%" },
-  { id: "dir1", label: "Director X", type: "person", x: 78, y: 30, icon: "person", pct: "15%" },
-  { id: "shell", label: "Shell Entity 09", type: "risk", x: 50, y: 78, icon: "warning", pct: "40%" },
-  { id: "sub2", label: "Tech Ventures", type: "private", x: 15, y: 60, icon: "devices", pct: "25%" },
-  { id: "fund", label: "Amanah Trust", type: "shareholder", x: 80, y: 65, icon: "account_balance", pct: "32%" },
-  { id: "jv", label: "JV Partners Sdn", type: "private", x: 35, y: 20, icon: "handshake", pct: "50%" },
-];
+type NodeType = "listed" | "private" | "shareholder" | "risk" | "person" | "subsidiary";
 
-const edges = [
-  { from: "main", to: "sub1" }, { from: "main", to: "dir1" },
-  { from: "main", to: "shell" }, { from: "main", to: "sub2" },
-  { from: "main", to: "fund" }, { from: "sub1", to: "jv" },
-];
+interface GraphNode {
+  id: string;
+  label: string;
+  type: NodeType;
+  x: number;
+  y: number;
+  percentage?: number;
+  stockCode?: string;
+  isListed?: boolean;
+  layer: "parent" | "center" | "subsidiary" | "side";
+}
 
-const nodeColors: Record<string, string> = {
-  listed: "bg-info/30 border-info",
-  private: "bg-muted border-muted-foreground/30",
-  shareholder: "bg-accent/30 border-accent",
-  risk: "bg-destructive/30 border-destructive",
-  person: "bg-primary/30 border-primary",
+interface GraphEdge {
+  from: string;
+  to: string;
+  label: string;
+  percentage?: number;
+}
+
+const NODE_COLORS: Record<NodeType, { bg: string; border: string }> = {
+  listed: { bg: "bg-info/30", border: "border-info" },
+  private: { bg: "bg-muted", border: "border-muted-foreground/30" },
+  shareholder: { bg: "bg-accent/30", border: "border-accent" },
+  risk: { bg: "bg-destructive/30", border: "border-destructive" },
+  person: { bg: "bg-primary/30", border: "border-primary" },
+  subsidiary: { bg: "bg-primary/20", border: "border-primary/50" },
 };
 
-const detailData = {
-  name: "Main Corp Bhd",
-  code: "BURSA: MAIN / 1022",
-  ownership: "54.2%",
-  risk: "Low",
-  riskFlags: [
-    { text: "Circular Ownership Detected in Level 3", level: "warning" },
-    { text: "Sanction Check: Clear", level: "clear" },
-  ],
-  beneficiaries: [
-    { name: "Tan Sri Dr. Ibrahim", pct: "32.1%" },
-    { name: "Amanah Trust Fund", pct: "12.5%" },
-  ],
-};
+// Filters
+type FilterType = "all" | "listed" | "risk" | "shareholders" | "subsidiaries";
+
+function buildGraph(forensic: ForensicData): { nodes: GraphNode[]; edges: GraphEdge[] } {
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+
+  // Central node
+  nodes.push({
+    id: "center",
+    label: forensic.entity.name,
+    type: forensic.entity.isListed ? "listed" : "private",
+    x: 50,
+    y: 50,
+    stockCode: forensic.entity.stockCode || undefined,
+    isListed: forensic.entity.isListed,
+    layer: "center",
+  });
+
+  // Shareholders (top layer)
+  const shareholders = forensic.shareholders || [];
+  shareholders.forEach((sh, i) => {
+    const count = shareholders.length;
+    const spacing = 80 / Math.max(count, 1);
+    const x = 10 + spacing * i + spacing / 2;
+    const y = 15 + (i % 2 === 0 ? 0 : 8);
+    const isMajor = sh.percentage > 20;
+    const nodeType: NodeType = isMajor ? "shareholder" : sh.isListed ? "listed" : "private";
+
+    nodes.push({
+      id: `sh_${i}`,
+      label: sh.name,
+      type: nodeType,
+      x,
+      y,
+      percentage: sh.percentage,
+      stockCode: sh.stockCode,
+      isListed: sh.isListed,
+      layer: "parent",
+    });
+
+    edges.push({
+      from: `sh_${i}`,
+      to: "center",
+      label: `${sh.percentage}% ${sh.type || "Shareholder"}`,
+      percentage: sh.percentage,
+    });
+  });
+
+  // Subsidiaries (bottom layer)
+  const subsidiaries = forensic.subsidiaries || [];
+  subsidiaries.forEach((sub, i) => {
+    const count = subsidiaries.length;
+    const spacing = 80 / Math.max(count, 1);
+    const x = 10 + spacing * i + spacing / 2;
+    const y = 80 + (i % 2 === 0 ? 0 : 8);
+
+    nodes.push({
+      id: `sub_${i}`,
+      label: sub.name,
+      type: sub.isListed ? "listed" : "subsidiary",
+      x,
+      y,
+      percentage: sub.percentage,
+      stockCode: sub.stockCode,
+      isListed: sub.isListed,
+      layer: "subsidiary",
+    });
+
+    edges.push({
+      from: "center",
+      to: `sub_${i}`,
+      label: `${sub.percentage}% Subsidiary`,
+      percentage: sub.percentage,
+    });
+  });
+
+  // Directors (side layer)
+  const directors = forensic.directors || [];
+  directors.slice(0, 4).forEach((dir, i) => {
+    const x = i < 2 ? 8 : 92;
+    const y = 35 + (i % 2) * 25;
+
+    nodes.push({
+      id: `dir_${i}`,
+      label: dir.name,
+      type: "person",
+      x,
+      y,
+      layer: "side",
+    });
+
+    edges.push({
+      from: `dir_${i}`,
+      to: "center",
+      label: dir.position || "Director",
+    });
+  });
+
+  return { nodes, edges };
+}
 
 export default function NetworkPage() {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchEntity, setSearchEntity] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [filter, setFilter] = useState<FilterType>("all");
+  const [zoom, setZoom] = useState(1);
+
+  const { data: forensicData, isLoading, error } = useQuery({
+    queryKey: ['forensic', searchEntity],
+    queryFn: () => bursaApi.getForensicData(searchEntity!),
+    enabled: !!searchEntity,
+    staleTime: 300000,
+    retry: 1,
+  });
+
+  const handleSearch = useCallback(() => {
+    if (searchQuery.trim().length > 0) {
+      setSearchEntity(searchQuery.trim());
+      setSelectedNode(null);
+      setDrawerOpen(false);
+    }
+  }, [searchQuery]);
+
+  const graph = forensicData ? buildGraph(forensicData) : null;
+
+  // Apply filters
+  const filteredNodes = graph?.nodes.filter(n => {
+    if (filter === "all") return true;
+    if (filter === "listed") return n.isListed || n.id === "center";
+    if (filter === "risk") return n.type === "risk" || n.id === "center";
+    if (filter === "shareholders") return n.layer === "parent" || n.id === "center";
+    if (filter === "subsidiaries") return n.layer === "subsidiary" || n.id === "center";
+    return true;
+  }) || [];
+
+  const filteredEdges = graph?.edges.filter(e => {
+    const nodeIds = filteredNodes.map(n => n.id);
+    return nodeIds.includes(e.from) && nodeIds.includes(e.to);
+  }) || [];
+
+  const selectedNodeData = filteredNodes.find(n => n.id === selectedNode);
 
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col h-[calc(100vh-120px)]">
@@ -52,153 +186,279 @@ export default function NetworkPage() {
           <span className="material-symbols-outlined text-primary">search</span>
           <input
             className="bg-transparent border-none text-foreground focus:outline-none placeholder:text-muted-foreground w-full text-sm font-medium"
-            placeholder="Search corporate entity..."
-            defaultValue="Main Corp Bhd"
+            placeholder="Search corporate entity (e.g. MAYBANK, CIMB)..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
           />
         </label>
-        <button className="glass-panel w-12 h-12 rounded-xl flex items-center justify-center text-primary">
-          <span className="material-symbols-outlined">tune</span>
+        <button
+          onClick={handleSearch}
+          className="glass-panel w-12 h-12 rounded-xl flex items-center justify-center text-primary hover:bg-primary/10 transition-colors"
+        >
+          <span className="material-symbols-outlined">send</span>
         </button>
       </div>
 
       {/* Filter chips */}
       <div className="flex gap-2 px-4 mt-3 overflow-x-auto hide-scrollbar pb-2">
-        <div className="flex h-8 shrink-0 items-center gap-2 rounded-full glass-panel px-3">
-          <span className="material-symbols-outlined text-primary text-sm">layers</span>
-          <span className="text-xs font-medium">Depth: 3</span>
-        </div>
-        <div className="flex h-8 shrink-0 items-center gap-2 rounded-full bg-primary/20 border border-primary/40 px-3">
-          <span className="material-symbols-outlined text-primary text-sm">shield</span>
-          <span className="text-primary text-xs font-medium">Risk: On</span>
-        </div>
-        <div className="flex h-8 shrink-0 items-center gap-2 rounded-full glass-panel px-3">
-          <span className="material-symbols-outlined text-primary text-sm">filter_alt</span>
-          <span className="text-xs font-medium">Bursa Listed</span>
-        </div>
+        {([
+          { key: "all", icon: "layers", label: "All" },
+          { key: "listed", icon: "verified", label: "Listed Only" },
+          { key: "shareholders", icon: "people", label: "Shareholders" },
+          { key: "subsidiaries", icon: "account_tree", label: "Subsidiaries" },
+          { key: "risk", icon: "shield", label: "Risk Flagged" },
+        ] as { key: FilterType; icon: string; label: string }[]).map(f => (
+          <button
+            key={f.key}
+            onClick={() => setFilter(f.key)}
+            className={`flex h-8 shrink-0 items-center gap-2 rounded-full px-3 transition-colors ${
+              filter === f.key
+                ? "bg-primary/20 border border-primary/40"
+                : "glass-panel"
+            }`}
+          >
+            <span className={`material-symbols-outlined text-sm ${filter === f.key ? "text-primary" : "text-muted-foreground"}`}>{f.icon}</span>
+            <span className={`text-xs font-medium ${filter === f.key ? "text-primary" : "text-foreground"}`}>{f.label}</span>
+          </button>
+        ))}
       </div>
 
       {/* Graph area */}
       <div className="flex-1 relative graph-background mx-4 mt-3 rounded-2xl overflow-hidden glass-panel">
-        {/* SVG edges */}
-        <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-40">
-          {edges.map((e, i) => {
-            const from = nodes.find((n) => n.id === e.from)!;
-            const to = nodes.find((n) => n.id === e.to)!;
-            return (
-              <line
-                key={i}
-                x1={`${from.x}%`} y1={`${from.y}%`}
-                x2={`${to.x}%`} y2={`${to.y}%`}
-                stroke={to.type === "risk" ? "hsl(var(--warning))" : "hsl(var(--primary))"}
-                strokeWidth={to.type === "risk" ? 3 : 1.5}
-              />
-            );
-          })}
-        </svg>
+        {/* Empty state */}
+        {!searchEntity && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-center p-8">
+            <span className="material-symbols-outlined text-primary text-5xl mb-4">hub</span>
+            <h3 className="text-sm font-bold mb-2">Corporate Forensic Network</h3>
+            <p className="text-xs text-muted-foreground max-w-xs">
+              Search any Bursa Malaysia entity to visualize ownership structures, shareholders, subsidiaries, and director networks.
+            </p>
+          </div>
+        )}
 
-        {/* Nodes */}
-        {nodes.map((node) => (
-          <button
-            key={node.id}
-            onClick={() => { setSelectedNode(node.id); setDrawerOpen(true); }}
-            className="absolute z-10 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-1 group"
-            style={{ left: `${node.x}%`, top: `${node.y}%` }}
-          >
-            <div className={`${node.id === "main" ? "h-14 w-14" : "h-10 w-10"} rounded-full ${nodeColors[node.type]} border-2 flex items-center justify-center transition-transform group-hover:scale-110 ${
-              node.type === "risk" ? "glow-danger" : node.id === "main" ? "glow-primary" : ""
-            }`}>
-              <span className={`material-symbols-outlined ${node.id === "main" ? "text-xl" : "text-sm"}`}>{node.icon}</span>
-            </div>
-            <span className="text-[8px] font-bold text-muted-foreground whitespace-nowrap bg-background/80 px-1.5 py-0.5 rounded">
-              {node.label}
-            </span>
-            {node.pct && (
-              <span className="text-[7px] text-primary font-mono">{node.pct}</span>
-            )}
-          </button>
-        ))}
+        {/* Loading */}
+        {isLoading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center">
+            <span className="material-symbols-outlined text-primary text-3xl animate-spin">progress_activity</span>
+            <p className="text-xs text-muted-foreground mt-3">Searching corporate records...</p>
+            <p className="text-[9px] text-muted-foreground mt-1">Analyzing ownership structure via AI</p>
+          </div>
+        )}
 
-        {/* Mode toggle */}
-        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 glass-panel p-1 rounded-full flex gap-1">
-          <button className="px-4 py-1.5 rounded-full bg-primary text-primary-foreground text-[10px] font-bold uppercase tracking-wider">Influence Map</button>
-          <button className="px-4 py-1.5 rounded-full text-muted-foreground text-[10px] font-bold uppercase tracking-wider hover:bg-secondary">Risk Heatmap</button>
-        </div>
+        {/* Error */}
+        {error && !isLoading && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-8">
+            <span className="material-symbols-outlined text-destructive text-3xl mb-3">error</span>
+            <p className="text-xs text-muted-foreground text-center">Failed to load forensic data. Try again.</p>
+          </div>
+        )}
+
+        {/* Graph rendering */}
+        {forensicData && !isLoading && (
+          <div className="absolute inset-0" style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
+            {/* SVG edges with labels */}
+            <svg className="absolute inset-0 w-full h-full pointer-events-none">
+              {filteredEdges.map((e, i) => {
+                const fromNode = filteredNodes.find(n => n.id === e.from);
+                const toNode = filteredNodes.find(n => n.id === e.to);
+                if (!fromNode || !toNode) return null;
+                const isRisk = fromNode.type === "risk" || toNode.type === "risk";
+                const midX = (fromNode.x + toNode.x) / 2;
+                const midY = (fromNode.y + toNode.y) / 2;
+                return (
+                  <g key={i}>
+                    <line
+                      x1={`${fromNode.x}%`} y1={`${fromNode.y}%`}
+                      x2={`${toNode.x}%`} y2={`${toNode.y}%`}
+                      stroke={isRisk ? "hsl(var(--destructive))" : "hsl(var(--primary))"}
+                      strokeWidth={isRisk ? 2.5 : 1.5}
+                      strokeOpacity={0.5}
+                      strokeDasharray={fromNode.type === "person" ? "4,4" : "none"}
+                    />
+                    {/* Edge label */}
+                    <text
+                      x={`${midX}%`} y={`${midY}%`}
+                      textAnchor="middle"
+                      dominantBaseline="middle"
+                      fill="hsl(var(--muted-foreground))"
+                      fontSize="7"
+                      fontWeight="600"
+                    >
+                      {e.label}
+                    </text>
+                  </g>
+                );
+              })}
+            </svg>
+
+            {/* Nodes */}
+            {filteredNodes.map((node) => {
+              const colors = NODE_COLORS[node.type];
+              const isCenter = node.id === "center";
+              const hasRiskFlag = forensicData.riskFlags && forensicData.riskFlags.length > 0 && isCenter;
+              return (
+                <button
+                  key={node.id}
+                  onClick={() => { setSelectedNode(node.id); setDrawerOpen(true); }}
+                  className="absolute z-10 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-0.5 group"
+                  style={{ left: `${node.x}%`, top: `${node.y}%` }}
+                >
+                  <div className={`${isCenter ? "h-16 w-16" : "h-10 w-10"} rounded-full ${colors.bg} border-2 ${colors.border} flex items-center justify-center transition-transform group-hover:scale-110 ${
+                    hasRiskFlag ? "ring-2 ring-destructive ring-offset-2 ring-offset-background" : isCenter ? "glow-primary" : ""
+                  }`}>
+                    <span className={`material-symbols-outlined ${isCenter ? "text-lg" : "text-xs"}`}>
+                      {node.type === "person" ? "person" :
+                       node.type === "shareholder" ? "account_balance" :
+                       node.type === "listed" ? "verified" :
+                       node.type === "risk" ? "warning" :
+                       node.type === "subsidiary" ? "business" : "corporate_fare"}
+                    </span>
+                  </div>
+                  <span className="text-[7px] font-bold text-muted-foreground whitespace-nowrap bg-background/80 px-1.5 py-0.5 rounded max-w-[80px] truncate">
+                    {node.label}
+                  </span>
+                  {node.percentage != null && (
+                    <span className="text-[6px] text-primary font-mono bg-primary/10 px-1 rounded">
+                      {node.percentage}%
+                    </span>
+                  )}
+                  {node.isListed && !isCenter && (
+                    <span className="text-[5px] font-bold text-info bg-info/10 px-1 rounded uppercase">Listed</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Zoom controls */}
-        <div className="absolute right-3 bottom-20 z-20 flex flex-col gap-2">
-          <button className="flex size-8 items-center justify-center rounded-lg glass-panel text-foreground text-sm">
+        <div className="absolute right-3 bottom-4 z-20 flex flex-col gap-2">
+          <button onClick={() => setZoom(z => Math.min(z + 0.2, 2))} className="flex size-8 items-center justify-center rounded-lg glass-panel text-foreground text-sm">
             <span className="material-symbols-outlined text-lg">add</span>
           </button>
-          <button className="flex size-8 items-center justify-center rounded-lg glass-panel text-foreground text-sm">
+          <button onClick={() => setZoom(z => Math.max(z - 0.2, 0.5))} className="flex size-8 items-center justify-center rounded-lg glass-panel text-foreground text-sm">
             <span className="material-symbols-outlined text-lg">remove</span>
           </button>
+          <button onClick={() => setZoom(1)} className="flex size-8 items-center justify-center rounded-lg glass-panel text-foreground text-sm">
+            <span className="material-symbols-outlined text-lg">center_focus_strong</span>
+          </button>
         </div>
+
+        {/* Legend */}
+        {forensicData && (
+          <div className="absolute left-3 bottom-4 z-20 glass-panel rounded-lg p-2 space-y-1">
+            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-info" /><span className="text-[7px] text-muted-foreground">Listed</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-muted-foreground" /><span className="text-[7px] text-muted-foreground">Private</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-accent" /><span className="text-[7px] text-muted-foreground">Major (&gt;20%)</span></div>
+            <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-destructive" /><span className="text-[7px] text-muted-foreground">Risk</span></div>
+          </div>
+        )}
       </div>
 
       {/* Detail drawer */}
-      {drawerOpen && (
-        <motion.div
-          initial={{ y: "100%" }}
-          animate={{ y: 0 }}
-          exit={{ y: "100%" }}
-          className="fixed bottom-20 left-0 right-0 z-40 glass-panel rounded-t-2xl border-t border-glass-border p-6 max-h-[60vh] overflow-y-auto"
-        >
-          <div className="flex justify-between items-start mb-4">
-            <div>
-              <h3 className="text-lg font-bold">{detailData.name}</h3>
-              <p className="text-primary text-xs font-mono">{detailData.code}</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="bg-primary/20 text-primary text-[10px] font-bold px-2 py-1 rounded">HEALTHY</span>
-              <button onClick={() => setDrawerOpen(false)} className="text-muted-foreground">
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 mb-6">
-            <div className="bg-secondary p-3 rounded-lg border border-glass-border">
-              <p className="text-muted-foreground text-[10px] uppercase font-bold tracking-wider mb-1">Direct Ownership</p>
-              <p className="text-xl font-bold">{detailData.ownership}</p>
-            </div>
-            <div className="bg-secondary p-3 rounded-lg border border-glass-border">
-              <p className="text-muted-foreground text-[10px] uppercase font-bold tracking-wider mb-1">Risk Rating</p>
-              <p className="text-warning text-xl font-bold">{detailData.risk}</p>
-            </div>
-          </div>
-
-          <h4 className="text-xs font-bold uppercase tracking-widest mb-3 border-b border-glass-border pb-2">Risk Flags</h4>
-          <div className="space-y-2 mb-6">
-            {detailData.riskFlags.map((flag, i) => (
-              <div key={i} className={`flex items-center gap-3 p-2 rounded border ${
-                flag.level === "warning" ? "bg-warning/10 border-warning/30" : "bg-secondary border-glass-border opacity-60"
-              }`}>
-                <span className={`material-symbols-outlined text-sm ${flag.level === "warning" ? "text-warning" : "text-muted-foreground"}`}>
-                  {flag.level === "warning" ? "circle_notifications" : "cancel"}
-                </span>
-                <p className={`text-[10px] font-medium ${flag.level === "warning" ? "text-warning" : "text-muted-foreground"}`}>{flag.text}</p>
+      <AnimatePresence>
+        {drawerOpen && selectedNodeData && forensicData && (
+          <motion.div
+            initial={{ y: "100%" }}
+            animate={{ y: 0 }}
+            exit={{ y: "100%" }}
+            className="fixed bottom-20 left-0 right-0 z-40 glass-panel rounded-t-2xl border-t border-glass-border p-5 max-h-[55vh] overflow-y-auto"
+          >
+            <div className="flex justify-between items-start mb-4">
+              <div>
+                <h3 className="text-sm font-bold">{selectedNodeData.label}</h3>
+                {selectedNodeData.stockCode && (
+                  <p className="text-primary text-[10px] font-mono">BURSA: {selectedNodeData.stockCode}</p>
+                )}
               </div>
-            ))}
-          </div>
+              <div className="flex items-center gap-2">
+                {selectedNodeData.isListed && (
+                  <span className="bg-info/20 text-info text-[9px] font-bold px-2 py-0.5 rounded">LISTED</span>
+                )}
+                <button onClick={() => setDrawerOpen(false)} className="text-muted-foreground">
+                  <span className="material-symbols-outlined text-lg">close</span>
+                </button>
+              </div>
+            </div>
 
-          <h4 className="text-xs font-bold uppercase tracking-widest mb-3 border-b border-glass-border pb-2">Ultimate Beneficiaries</h4>
-          <div className="space-y-2">
-            {detailData.beneficiaries.map((b, i) => (
-              <div key={i} className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="size-6 rounded-full bg-secondary flex items-center justify-center text-[10px]">{i + 1}</div>
-                  <span className="text-xs">{b.name}</span>
+            {selectedNodeData.id === "center" ? (
+              <>
+                {/* Entity details */}
+                <div className="grid grid-cols-2 gap-2 mb-4">
+                  <div className="bg-secondary p-2.5 rounded-lg">
+                    <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Country</p>
+                    <p className="text-xs font-bold">{forensicData.entity.country}</p>
+                  </div>
+                  <div className="bg-secondary p-2.5 rounded-lg">
+                    <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Market Cap</p>
+                    <p className="text-xs font-bold">{forensicData.entity.marketCap || "N/A"}</p>
+                  </div>
                 </div>
-                <span className="text-primary text-xs font-bold">{b.pct}</span>
-              </div>
-            ))}
-          </div>
 
-          <button className="mt-6 w-full py-3 bg-primary text-primary-foreground font-bold rounded-xl text-sm hover:opacity-90 transition-all">
-            Generate Audit Report
-          </button>
-        </motion.div>
-      )}
+                {/* Risk flags */}
+                {forensicData.riskFlags && forensicData.riskFlags.length > 0 && (
+                  <>
+                    <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2 text-destructive">Risk Flags</h4>
+                    <div className="space-y-1.5 mb-4">
+                      {forensicData.riskFlags.map((flag, i) => (
+                        <div key={i} className="flex items-center gap-2 p-2 rounded bg-destructive/10 border border-destructive/20">
+                          <span className="material-symbols-outlined text-destructive text-xs">warning</span>
+                          <p className="text-[9px] text-destructive">{flag}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {/* Directors */}
+                {forensicData.directors && forensicData.directors.length > 0 && (
+                  <>
+                    <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2 border-t border-glass-border pt-3">Directors</h4>
+                    <div className="space-y-1.5 mb-4">
+                      {forensicData.directors.map((d, i) => (
+                        <div key={i} className="flex items-center justify-between">
+                          <div>
+                            <span className="text-[10px] font-medium">{d.name}</span>
+                            <span className="text-[8px] text-muted-foreground ml-2">{d.position}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+
+                {/* Sources */}
+                {forensicData.sources && forensicData.sources.length > 0 && (
+                  <>
+                    <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2 border-t border-glass-border pt-3 text-muted-foreground">Sources</h4>
+                    <div className="space-y-1">
+                      {forensicData.sources.map((s, i) => (
+                        <a key={i} href={s} target="_blank" rel="noopener noreferrer"
+                          className="text-[8px] text-primary truncate block hover:underline">{s}</a>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </>
+            ) : (
+              <div className="space-y-2">
+                {selectedNodeData.percentage != null && (
+                  <div className="bg-secondary p-2.5 rounded-lg">
+                    <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Ownership</p>
+                    <p className="text-lg font-bold">{selectedNodeData.percentage}%</p>
+                  </div>
+                )}
+                <div className="bg-secondary p-2.5 rounded-lg">
+                  <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Type</p>
+                  <p className="text-xs font-bold capitalize">{selectedNodeData.type}</p>
+                </div>
+                <p className="text-[9px] text-muted-foreground mt-3">No further public ownership data available for this entity.</p>
+              </div>
+            )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }
