@@ -40,13 +40,104 @@ export interface MarketOverview {
   tickers: TickerInfo[];
 }
 
-export interface ChartPoint {
-  timestamp: number;
-  open: number;
-  high: number;
-  low: number;
-  close: number;
-  volume: number;
+export interface SearchResult {
+  symbol: string;
+  name: string;
+  exchange: string;
+  type: string;
+  sector?: string;
+  industry?: string;
+}
+
+export interface AnalysisCard {
+  category: string;
+  icon: "positive" | "neutral" | "negative";
+  summary: string;
+  probability: number;
+}
+
+export interface StockAnalysis {
+  opportunityScore: number;
+  probabilityPositive: number;
+  confidence: number;
+  riskLevel: string;
+  suggestedBias: string;
+  hiddenRadar: boolean;
+  trapFlag: boolean;
+  trapProbability: number;
+  cards: AnalysisCard[];
+  riskMetrics: {
+    volatility: number;
+    liquidityRisk: number;
+    governanceRisk: number;
+    structuralExposure: number;
+    macroSensitivity: number;
+    maxDrawdown: number;
+    riskTrend: string;
+  };
+  keyReason: string;
+}
+
+export interface ForensicEntity {
+  name: string;
+  stockCode: string | null;
+  marketCap: string | null;
+  isListed: boolean;
+  country: string;
+}
+
+export interface ForensicData {
+  entity: ForensicEntity;
+  shareholders: Array<{
+    name: string;
+    percentage: number;
+    type: string;
+    isListed: boolean;
+    stockCode?: string;
+  }>;
+  subsidiaries: Array<{
+    name: string;
+    percentage: number;
+    isListed: boolean;
+    stockCode?: string;
+  }>;
+  directors: Array<{
+    name: string;
+    position: string;
+    otherDirectorships: string[];
+  }>;
+  riskFlags: string[];
+  sources: string[];
+}
+
+export interface MacroFactor {
+  factor: string;
+  direction: string;
+  impactStrength: number;
+  sectorExposure: string[];
+  timeHorizon: string;
+  summary: string;
+}
+
+export interface DailySuggestion {
+  symbol: string;
+  name: string;
+  confidence: number;
+  riskLevel: string;
+  bias: string;
+  keyReason: string;
+  riskTriggers: string;
+  opportunityScore: number;
+  hiddenRadar: boolean;
+  trapFlag: boolean;
+}
+
+export interface TrapStock {
+  symbol: string;
+  name: string;
+  trapProbability: number;
+  manipulationRisk: string;
+  reason: string;
 }
 
 export const bursaApi = {
@@ -70,6 +161,15 @@ export const bursaApi = {
     return data;
   },
 
+  async searchStocks(query: string): Promise<SearchResult[]> {
+    const { data, error } = await supabase.functions.invoke('bursa-search', {
+      body: { query },
+    });
+
+    if (error) throw new Error(error.message);
+    return data?.results || [];
+  },
+
   async getNews(query?: string) {
     const { data, error } = await supabase.functions.invoke('bursa-news', {
       body: { action: 'bursa_news', query },
@@ -86,6 +186,42 @@ export const bursaApi = {
 
     if (error) throw new Error(error.message);
     return data;
+  },
+
+  async analyzeStock(stockData: any, newsContext?: string): Promise<StockAnalysis | null> {
+    const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
+      body: { action: 'analyze_stock', stockData, newsContext },
+    });
+
+    if (error) throw new Error(error.message);
+    return data?.analysis || null;
+  },
+
+  async getDailySuggestions(stockData: any) {
+    const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
+      body: { action: 'daily_suggestions', stockData },
+    });
+
+    if (error) throw new Error(error.message);
+    return data;
+  },
+
+  async getMacroAnalysis(context?: string) {
+    const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
+      body: { action: 'macro_analysis', macroContext: context },
+    });
+
+    if (error) throw new Error(error.message);
+    return data;
+  },
+
+  async getForensicData(entity: string): Promise<ForensicData | null> {
+    const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
+      body: { action: 'forensic_search', stockData: { entity } },
+    });
+
+    if (error) throw new Error(error.message);
+    return data?.forensic || null;
   },
 };
 
