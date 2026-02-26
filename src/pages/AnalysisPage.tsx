@@ -1,8 +1,8 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { motion } from "framer-motion";
-import { bursaApi, formatPrice, formatChange, type StockAnalysis, type AnalysisCard } from "@/lib/api/bursa";
+import { bursaApi, formatPrice, formatChange, type StockAnalysis, type AnalysisCard, type QFEAnalysis } from "@/lib/api/bursa";
 
 const CHART_RANGES: Record<string, { interval: string; range: string }> = {
   "1D": { interval: "5m", range: "1d" },
@@ -12,11 +12,7 @@ const CHART_RANGES: Record<string, { interval: string; range: string }> = {
   "1Y": { interval: "1wk", range: "1y" },
 };
 
-const tabs = ["Overview", "AI Insight", "Risk Radar", "Macro"];
-
-const CARD_ICONS: Record<string, { positive: string; neutral: string; negative: string }> = {
-  default: { positive: "check_circle", neutral: "warning", negative: "cancel" },
-};
+const tabs = ["Overview", "AI Insight", "Risk Radar", "QFE", "Macro"];
 
 function ScoreBar({ value, color = "primary" }: { value: number; color?: string }) {
   return (
@@ -45,6 +41,181 @@ function AnalysisCardComponent({ card }: { card: AnalysisCard }) {
       </div>
       <p className="text-[10px] text-muted-foreground leading-relaxed">{card.summary}</p>
       <ScoreBar value={card.probability} color={barColor} />
+    </div>
+  );
+}
+
+function QFESection({ qfe, isLoading, stockName }: { qfe: QFEAnalysis | null; isLoading: boolean; stockName: string }) {
+  if (isLoading) {
+    return (
+      <div className="glass-panel p-6 rounded-xl text-center">
+        <span className="material-symbols-outlined text-primary text-2xl animate-spin">progress_activity</span>
+        <p className="text-xs text-muted-foreground mt-2">Quant Fusion Engine analyzing {stockName}...</p>
+        <p className="text-[9px] text-muted-foreground mt-1">Running multi-model consensus validation</p>
+      </div>
+    );
+  }
+
+  if (!qfe) {
+    return (
+      <div className="glass-panel p-6 rounded-xl text-center">
+        <span className="material-symbols-outlined text-muted-foreground text-2xl">psychology</span>
+        <p className="text-xs text-muted-foreground mt-2">Select a stock to run QFE analysis</p>
+      </div>
+    );
+  }
+
+  const convictionColor = qfe.convictionScore >= 70 ? "text-primary" : qfe.convictionScore >= 40 ? "text-accent" : "text-destructive";
+  const classColor = qfe.setupClassification === "High Probability" ? "bg-primary/20 text-primary" :
+    qfe.setupClassification === "Moderate" ? "bg-accent/20 text-accent" :
+    "bg-destructive/20 text-destructive";
+
+  return (
+    <div className="space-y-3">
+      {/* Final Conviction Card */}
+      <div className="glass-panel p-3 rounded-xl border-l-4 border-primary">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-[10px] font-bold uppercase tracking-wider">🔥 Final Conviction</span>
+          <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${classColor}`}>{qfe.setupClassification}</span>
+        </div>
+        <div className="flex items-center gap-4 mt-2">
+          <div>
+            <span className="text-[8px] text-muted-foreground">Score</span>
+            <p className={`text-2xl font-bold ${convictionColor}`}>{qfe.convictionScore}%</p>
+          </div>
+          <div>
+            <span className="text-[8px] text-muted-foreground">Weight Profile</span>
+            <p className="text-xs font-bold">{qfe.weightProfile}</p>
+          </div>
+        </div>
+        <ScoreBar value={qfe.convictionScore} color={qfe.convictionScore >= 70 ? "primary" : qfe.convictionScore >= 40 ? "accent" : "destructive"} />
+      </div>
+
+      {/* Trade Setup Card */}
+      <div className="glass-panel p-3 rounded-xl">
+        <span className="text-[10px] font-bold uppercase tracking-wider mb-2 block">📊 Trade Setup</span>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Target Zone</p>
+            <p className="text-xs font-bold text-primary">
+              RM {qfe.targetZone?.low?.toFixed(2)} – {qfe.targetZone?.high?.toFixed(2)}
+            </p>
+            <p className="text-[8px] text-muted-foreground">Hit Prob: {qfe.targetZone?.probability}%</p>
+          </div>
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Stop Loss Zone</p>
+            <p className="text-xs font-bold text-destructive">
+              RM {qfe.stopLossZone?.low?.toFixed(2)} – {qfe.stopLossZone?.high?.toFixed(2)}
+            </p>
+          </div>
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Est. Days</p>
+            <p className="text-xs font-bold">{qfe.estimatedDays?.min}–{qfe.estimatedDays?.max} days</p>
+          </div>
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Decay Half-Life</p>
+            <p className="text-xs font-bold">{qfe.convictionDecay?.halfLifeDays} days</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Signal Consensus Card */}
+      <div className="glass-panel p-3 rounded-xl">
+        <span className="text-[10px] font-bold uppercase tracking-wider mb-2 block">🧠 Signal Consensus</span>
+        <div className="grid grid-cols-3 gap-2">
+          {[
+            { label: "Trend", data: qfe.signalConsensus?.trendModel },
+            { label: "Breakout", data: qfe.signalConsensus?.breakoutModel },
+            { label: "Mean Rev", data: qfe.signalConsensus?.meanReversionModel },
+          ].map(m => {
+            const icon = m.data?.signal === "Bullish" ? "check_circle" : m.data?.signal === "Bearish" ? "cancel" : "warning";
+            const color = m.data?.signal === "Bullish" ? "text-primary" : m.data?.signal === "Bearish" ? "text-destructive" : "text-accent";
+            return (
+              <div key={m.label} className="bg-secondary p-2 rounded-lg text-center">
+                <span className={`material-symbols-outlined text-sm ${color}`}>{icon}</span>
+                <p className="text-[9px] font-bold mt-0.5">{m.label}</p>
+                <p className={`text-[8px] font-bold ${color}`}>{m.data?.score}%</p>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Scenario Probability Card */}
+      <div className="glass-panel p-3 rounded-xl">
+        <span className="text-[10px] font-bold uppercase tracking-wider mb-2 block">📉 Scenario Probability</span>
+        <div className="space-y-2">
+          {[
+            { label: "Bull Case", value: qfe.scenarioProbability?.bull, color: "primary" },
+            { label: "Base Case", value: qfe.scenarioProbability?.base, color: "accent" },
+            { label: "Bear Case", value: qfe.scenarioProbability?.bear, color: "destructive" },
+          ].map(s => (
+            <div key={s.label}>
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold">{s.label}</span>
+                <span className={`text-[10px] font-bold text-${s.color}`}>{s.value}%</span>
+              </div>
+              <ScoreBar value={s.value || 0} color={s.color} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Conflict Signals */}
+      {qfe.conflictSignals && qfe.conflictSignals.length > 0 && (
+        <div className="glass-panel p-3 rounded-xl border-l-4 border-accent">
+          <span className="text-[10px] font-bold uppercase tracking-wider mb-2 block">⚠ Conflict Signals</span>
+          {qfe.conflictSignals.map((c, i) => (
+            <div key={i} className="flex items-center gap-2 mb-1.5">
+              <span className="text-[8px] font-bold text-accent bg-accent/10 px-1.5 py-0.5 rounded">{c.intensity}%</span>
+              <span className="text-[9px] text-muted-foreground">{c.pair}: {c.description}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Risk Factors + Retail */}
+      <div className="glass-panel p-3 rounded-xl">
+        <span className="text-[10px] font-bold uppercase tracking-wider mb-2 block">⚠ Risk & Retail</span>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Trap Prob</p>
+            <p className={`text-xs font-bold ${(qfe.riskFactors?.trapProbability || 0) > 30 ? "text-destructive" : "text-primary"}`}>
+              {qfe.riskFactors?.trapProbability}%
+            </p>
+          </div>
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Liquidity</p>
+            <p className="text-xs font-bold">{qfe.riskFactors?.liquidityRisk}</p>
+          </div>
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Slippage Risk</p>
+            <p className="text-xs font-bold">{qfe.retailAdaptation?.slippageRisk}%</p>
+          </div>
+          <div className="bg-secondary p-2 rounded-lg">
+            <p className="text-[8px] text-muted-foreground">Volatility</p>
+            <p className="text-xs font-bold">{qfe.riskFactors?.volatilityRegime}</p>
+          </div>
+        </div>
+      </div>
+
+      {/* Key Drivers */}
+      {qfe.keyDrivers && qfe.keyDrivers.length > 0 && (
+        <div className="glass-panel p-3 rounded-xl">
+          <span className="text-[10px] font-bold uppercase tracking-wider mb-2 block">Key Drivers</span>
+          {qfe.keyDrivers.map((d, i) => (
+            <div key={i} className="flex items-center gap-2 mb-1">
+              <span className="text-primary text-[10px]">•</span>
+              <span className="text-[10px] text-muted-foreground">{d}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Disclaimer */}
+      <div className="bg-accent/10 p-2 rounded-lg">
+        <p className="text-[8px] text-accent">{qfe.disclaimer || "Probabilistic analysis only. Not financial advice."}</p>
+      </div>
     </div>
   );
 }
@@ -83,7 +254,26 @@ export default function AnalysisPage() {
     retry: 1,
   });
 
-  // Macro analysis
+  // QFE Analysis
+  const { data: qfeAnalysis, isLoading: qfeLoading } = useQuery({
+    queryKey: ['qfe-analysis', stockSymbol],
+    queryFn: () => bursaApi.getQFEAnalysis({
+      symbol: stockSymbol,
+      price: quote?.regularMarketPrice,
+      change: quote?.regularMarketChangePercent,
+      volume: quote?.regularMarketVolume,
+      high52: quote?.fiftyTwoWeekHigh,
+      low52: quote?.fiftyTwoWeekLow,
+      sector: tickerInfo?.sector,
+      name: tickerInfo?.name || quote?.shortName,
+      marketCap: quote?.marketCap,
+    }),
+    enabled: !!quote && activeTab === "QFE",
+    staleTime: 300000,
+    retry: 1,
+  });
+
+  // Macro analysis (with stock data for tags)
   const { data: macroData, isLoading: macroLoading } = useQuery({
     queryKey: ['macro-analysis'],
     queryFn: () => bursaApi.getMacroAnalysis(),
@@ -251,7 +441,6 @@ export default function AnalysisPage() {
 
           {aiAnalysis && !aiLoading && (
             <>
-              {/* Summary header */}
               <div className="glass-panel p-3 rounded-xl border-l-4 border-primary">
                 <div className="flex items-center justify-between mb-1">
                   <span className="text-[10px] font-bold uppercase tracking-wider">AI Assessment</span>
@@ -283,7 +472,6 @@ export default function AnalysisPage() {
                 </div>
               </div>
 
-              {/* Analysis cards */}
               <div className="grid grid-cols-2 gap-2">
                 {aiAnalysis.cards?.map((card, i) => (
                   <AnalysisCardComponent key={i} card={card} />
@@ -342,6 +530,12 @@ export default function AnalysisPage() {
         </section>
       )}
 
+      {activeTab === "QFE" && (
+        <section className="px-4 py-4">
+          <QFESection qfe={qfeAnalysis || null} isLoading={qfeLoading} stockName={tickerInfo?.name || stockSymbol} />
+        </section>
+      )}
+
       {activeTab === "Macro" && (
         <section className="px-4 py-4 space-y-3">
           {macroLoading && (
@@ -369,20 +563,41 @@ export default function AnalysisPage() {
                 <div key={i} className="glass-panel p-3 rounded-xl">
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-xs font-bold">{f.factor}</span>
-                    <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
-                      f.direction === "Bullish" ? "bg-primary/20 text-primary" :
-                      f.direction === "Bearish" ? "bg-destructive/20 text-destructive" :
-                      "bg-accent/20 text-accent"
-                    }`}>{f.direction}</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full ${
+                        f.direction === "Bullish" ? "bg-primary/20 text-primary" :
+                        f.direction === "Bearish" ? "bg-destructive/20 text-destructive" :
+                        "bg-accent/20 text-accent"
+                      }`}>{f.direction}</span>
+                      <span className="text-[8px] font-bold">Impact: {f.impactStrength}%</span>
+                    </div>
                   </div>
                   <p className="text-[9px] text-muted-foreground mb-1.5">{f.summary}</p>
-                  <div className="flex items-center justify-between">
+                  <div className="flex items-center justify-between mb-2">
                     <span className="text-[8px] text-muted-foreground">
                       Sectors: {f.sectorExposure?.join(", ")}
                     </span>
-                    <span className="text-[8px] font-bold">Impact: {f.impactStrength}%</span>
                   </div>
                   <ScoreBar value={f.impactStrength} color={f.direction === "Bearish" ? "destructive" : "primary"} />
+
+                  {/* Affected Stock Tags */}
+                  {f.affectedStocks && f.affectedStocks.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5 mt-2 pt-2 border-t border-glass-border">
+                      {f.affectedStocks.slice(0, 8).map((s: any, j: number) => (
+                        <Link
+                          key={j}
+                          to={`/analysis?stock=${encodeURIComponent(s.symbol)}`}
+                          className={`text-[8px] font-bold px-2 py-0.5 rounded-full border transition-colors hover:opacity-80 ${
+                            s.exposureDirection === "Bullish"
+                              ? "bg-primary/10 text-primary border-primary/30"
+                              : "bg-destructive/10 text-destructive border-destructive/30"
+                          }`}
+                        >
+                          {s.name}
+                        </Link>
+                      ))}
+                    </div>
+                  )}
                 </div>
               ))}
             </>
@@ -398,7 +613,7 @@ export default function AnalysisPage() {
             <h3 className="text-[10px] font-bold uppercase tracking-tight">Data Source</h3>
           </div>
           <p className="text-[9px] text-muted-foreground leading-relaxed">
-            Market data from Yahoo Finance (delayed ~15 min). AI analysis powered by Lovable AI. Not financial advice.
+            Market data from Yahoo Finance (delayed ~15 min). AI analysis powered by Lovable AI. QFE is probabilistic only. Not financial advice.
           </p>
         </div>
       </section>

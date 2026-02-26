@@ -1,5 +1,7 @@
 import { supabase } from "@/integrations/supabase/client";
 
+// ===================== TYPES =====================
+
 export interface StockQuote {
   symbol: string;
   shortName: string;
@@ -117,11 +119,18 @@ export interface MacroFactor {
   sectorExposure: string[];
   timeHorizon: string;
   summary: string;
+  affectedStocks?: Array<{
+    symbol: string;
+    name: string;
+    exposureDirection: string;
+    sensitivityScore: number;
+  }>;
 }
 
 export interface DailySuggestion {
   symbol: string;
   name: string;
+  category?: string;
   confidence: number;
   riskLevel: string;
   bias: string;
@@ -130,6 +139,11 @@ export interface DailySuggestion {
   opportunityScore: number;
   hiddenRadar: boolean;
   trapFlag: boolean;
+  trapProbability?: number;
+  volatilityScore?: number;
+  liquidityScore?: number;
+  macroAlignment?: string;
+  sectorTag?: string;
 }
 
 export interface TrapStock {
@@ -140,12 +154,44 @@ export interface TrapStock {
   reason: string;
 }
 
+export interface QFEAnalysis {
+  convictionScore: number;
+  setupClassification: string;
+  targetZone: { low: number; high: number; probability: number };
+  stopLossZone: { low: number; high: number };
+  estimatedDays: { min: number; max: number };
+  scenarioProbability: { bull: number; base: number; bear: number };
+  signalConsensus: {
+    trendModel: { signal: string; score: number };
+    breakoutModel: { signal: string; score: number };
+    meanReversionModel: { signal: string; score: number };
+  };
+  conflictSignals: Array<{ pair: string; intensity: number; description: string }>;
+  convictionDecay: { halfLifeDays: number; currentDecayRate: number };
+  retailAdaptation: {
+    slippageRisk: number;
+    liquiditySuitability: number;
+    pennyVolatilityMultiplier: number;
+    manipulationAdjustment: number;
+  };
+  riskFactors: {
+    trapProbability: number;
+    liquidityRisk: string;
+    macroAlignment: string;
+    volatilityRegime: string;
+  };
+  weightProfile: string;
+  keyDrivers: string[];
+  disclaimer: string;
+}
+
+// ===================== API =====================
+
 export const bursaApi = {
   async getMarketOverview(): Promise<MarketOverview> {
     const { data, error } = await supabase.functions.invoke('bursa-data', {
       body: { action: 'market_overview' },
     });
-
     if (error) throw new Error(error.message);
     if (!data?.success) throw new Error(data?.error || 'Failed to fetch market data');
     return { klci: data.klci, quotes: data.quotes, tickers: data.tickers };
@@ -155,7 +201,6 @@ export const bursaApi = {
     const { data, error } = await supabase.functions.invoke('bursa-data', {
       body: { action: 'stock_detail', symbol },
     });
-
     if (error) throw new Error(error.message);
     if (!data?.success) throw new Error(data?.error || 'Failed to fetch stock detail');
     return data;
@@ -165,7 +210,6 @@ export const bursaApi = {
     const { data, error } = await supabase.functions.invoke('bursa-search', {
       body: { query },
     });
-
     if (error) throw new Error(error.message);
     return data?.results || [];
   },
@@ -174,7 +218,6 @@ export const bursaApi = {
     const { data, error } = await supabase.functions.invoke('bursa-news', {
       body: { action: 'bursa_news', query },
     });
-
     if (error) throw new Error(error.message);
     return data;
   },
@@ -183,7 +226,6 @@ export const bursaApi = {
     const { data, error } = await supabase.functions.invoke('bursa-news', {
       body: { action: 'bursa_announcements' },
     });
-
     if (error) throw new Error(error.message);
     return data;
   },
@@ -192,7 +234,6 @@ export const bursaApi = {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
       body: { action: 'analyze_stock', stockData, newsContext },
     });
-
     if (error) throw new Error(error.message);
     return data?.analysis || null;
   },
@@ -201,16 +242,14 @@ export const bursaApi = {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
       body: { action: 'daily_suggestions', stockData },
     });
-
     if (error) throw new Error(error.message);
     return data;
   },
 
-  async getMacroAnalysis(context?: string) {
+  async getMacroAnalysis(context?: string, stockData?: any) {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
-      body: { action: 'macro_analysis', macroContext: context },
+      body: { action: 'macro_analysis', macroContext: context, stockData },
     });
-
     if (error) throw new Error(error.message);
     return data;
   },
@@ -219,13 +258,21 @@ export const bursaApi = {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
       body: { action: 'forensic_search', stockData: { entity } },
     });
-
     if (error) throw new Error(error.message);
     return data?.forensic || null;
   },
+
+  async getQFEAnalysis(stockData: any, newsContext?: string, macroContext?: string): Promise<QFEAnalysis | null> {
+    const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
+      body: { action: 'qfe_analysis', stockData, newsContext, macroContext },
+    });
+    if (error) throw new Error(error.message);
+    return data?.qfe || null;
+  },
 };
 
-// Helper to classify market cap
+// ===================== HELPERS =====================
+
 export function classifyCap(marketCap?: number): string {
   if (!marketCap) return "Unknown";
   if (marketCap >= 10_000_000_000) return "Large";
@@ -234,19 +281,16 @@ export function classifyCap(marketCap?: number): string {
   return "Penny";
 }
 
-// Helper to get volume ratio
 export function volumeRatio(currentVol: number, avgVol?: number): string {
   if (!avgVol || avgVol === 0) return "N/A";
   return (currentVol / avgVol).toFixed(1) + "x";
 }
 
-// Helper to format price
 export function formatPrice(price?: number): string {
   if (price == null) return "N/A";
   return `RM ${price.toFixed(2)}`;
 }
 
-// Helper to format market cap
 export function formatMarketCap(cap?: number): string {
   if (!cap) return "N/A";
   if (cap >= 1_000_000_000) return `RM ${(cap / 1_000_000_000).toFixed(1)}B`;
@@ -254,13 +298,11 @@ export function formatMarketCap(cap?: number): string {
   return `RM ${cap.toLocaleString()}`;
 }
 
-// Helper to format change percent
 export function formatChange(pct?: number): string {
   if (pct == null) return "N/A";
   return `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
 }
 
-// Helper to detect if move is news-driven or speculative
 export function detectMoveType(volRatio: number, hasNews: boolean): string {
   if (hasNews) return "News Driven";
   if (volRatio > 3) return "Speculative";
