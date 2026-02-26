@@ -33,14 +33,12 @@ const NODE_COLORS: Record<NodeType, { bg: string; border: string }> = {
   subsidiary: { bg: "bg-primary/20", border: "border-primary/50" },
 };
 
-// Filters
 type FilterType = "all" | "listed" | "risk" | "shareholders" | "subsidiaries";
 
 function buildGraph(forensic: ForensicData): { nodes: GraphNode[]; edges: GraphEdge[] } {
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
 
-  // Central node
   nodes.push({
     id: "center",
     label: forensic.entity.name,
@@ -52,7 +50,6 @@ function buildGraph(forensic: ForensicData): { nodes: GraphNode[]; edges: GraphE
     layer: "center",
   });
 
-  // Shareholders (top layer)
   const shareholders = forensic.shareholders || [];
   shareholders.forEach((sh, i) => {
     const count = shareholders.length;
@@ -63,26 +60,12 @@ function buildGraph(forensic: ForensicData): { nodes: GraphNode[]; edges: GraphE
     const nodeType: NodeType = isMajor ? "shareholder" : sh.isListed ? "listed" : "private";
 
     nodes.push({
-      id: `sh_${i}`,
-      label: sh.name,
-      type: nodeType,
-      x,
-      y,
-      percentage: sh.percentage,
-      stockCode: sh.stockCode,
-      isListed: sh.isListed,
-      layer: "parent",
+      id: `sh_${i}`, label: sh.name, type: nodeType, x, y,
+      percentage: sh.percentage, stockCode: sh.stockCode, isListed: sh.isListed, layer: "parent",
     });
-
-    edges.push({
-      from: `sh_${i}`,
-      to: "center",
-      label: `${sh.percentage}% ${sh.type || "Shareholder"}`,
-      percentage: sh.percentage,
-    });
+    edges.push({ from: `sh_${i}`, to: "center", label: `${sh.percentage}% ${sh.type || "Shareholder"}`, percentage: sh.percentage });
   });
 
-  // Subsidiaries (bottom layer)
   const subsidiaries = forensic.subsidiaries || [];
   subsidiaries.forEach((sub, i) => {
     const count = subsidiaries.length;
@@ -91,45 +74,18 @@ function buildGraph(forensic: ForensicData): { nodes: GraphNode[]; edges: GraphE
     const y = 80 + (i % 2 === 0 ? 0 : 8);
 
     nodes.push({
-      id: `sub_${i}`,
-      label: sub.name,
-      type: sub.isListed ? "listed" : "subsidiary",
-      x,
-      y,
-      percentage: sub.percentage,
-      stockCode: sub.stockCode,
-      isListed: sub.isListed,
-      layer: "subsidiary",
+      id: `sub_${i}`, label: sub.name, type: sub.isListed ? "listed" : "subsidiary", x, y,
+      percentage: sub.percentage, stockCode: sub.stockCode, isListed: sub.isListed, layer: "subsidiary",
     });
-
-    edges.push({
-      from: "center",
-      to: `sub_${i}`,
-      label: `${sub.percentage}% Subsidiary`,
-      percentage: sub.percentage,
-    });
+    edges.push({ from: "center", to: `sub_${i}`, label: `${sub.percentage}% Subsidiary`, percentage: sub.percentage });
   });
 
-  // Directors (side layer)
   const directors = forensic.directors || [];
   directors.slice(0, 4).forEach((dir, i) => {
     const x = i < 2 ? 8 : 92;
     const y = 35 + (i % 2) * 25;
-
-    nodes.push({
-      id: `dir_${i}`,
-      label: dir.name,
-      type: "person",
-      x,
-      y,
-      layer: "side",
-    });
-
-    edges.push({
-      from: `dir_${i}`,
-      to: "center",
-      label: dir.position || "Director",
-    });
+    nodes.push({ id: `dir_${i}`, label: dir.name, type: "person", x, y, layer: "side" });
+    edges.push({ from: `dir_${i}`, to: "center", label: dir.position || "Director" });
   });
 
   return { nodes, edges };
@@ -143,12 +99,13 @@ export default function NetworkPage() {
   const [filter, setFilter] = useState<FilterType>("all");
   const [zoom, setZoom] = useState(1);
 
-  const { data: forensicData, isLoading, error } = useQuery({
+  const { data: forensicData, isLoading, error, isFetching } = useQuery({
     queryKey: ['forensic', searchEntity],
     queryFn: () => bursaApi.getForensicData(searchEntity!),
     enabled: !!searchEntity,
     staleTime: 300000,
     retry: 1,
+    // 30s timeout via gcTime
   });
 
   const handleSearch = useCallback(() => {
@@ -156,12 +113,16 @@ export default function NetworkPage() {
       setSearchEntity(searchQuery.trim());
       setSelectedNode(null);
       setDrawerOpen(false);
+      setFilter("all");
+      setZoom(1);
     }
   }, [searchQuery]);
 
+  // Quick suggestions
+  const quickSearches = ["MAYBANK", "CIMB", "TENAGA", "PETRONAS", "IHH", "GENTING"];
+
   const graph = forensicData ? buildGraph(forensicData) : null;
 
-  // Apply filters
   const filteredNodes = graph?.nodes.filter(n => {
     if (filter === "all") return true;
     if (filter === "listed") return n.isListed || n.id === "center";
@@ -186,7 +147,7 @@ export default function NetworkPage() {
           <span className="material-symbols-outlined text-primary">search</span>
           <input
             className="bg-transparent border-none text-foreground focus:outline-none placeholder:text-muted-foreground w-full text-sm font-medium"
-            placeholder="Search corporate entity (e.g. MAYBANK, CIMB)..."
+            placeholder="Search entity (e.g. MAYBANK, CIMB)..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
@@ -194,35 +155,45 @@ export default function NetworkPage() {
         </label>
         <button
           onClick={handleSearch}
-          className="glass-panel w-12 h-12 rounded-xl flex items-center justify-center text-primary hover:bg-primary/10 transition-colors"
+          disabled={isLoading}
+          className="glass-panel w-12 h-12 rounded-xl flex items-center justify-center text-primary hover:bg-primary/10 transition-colors disabled:opacity-50"
         >
-          <span className="material-symbols-outlined">send</span>
+          <span className="material-symbols-outlined">{isLoading ? "hourglass_empty" : "send"}</span>
         </button>
       </div>
 
+      {/* Quick searches */}
+      {!searchEntity && (
+        <div className="flex gap-1.5 px-4 mt-2 overflow-x-auto hide-scrollbar pb-1">
+          {quickSearches.map(q => (
+            <button key={q} onClick={() => { setSearchQuery(q); setSearchEntity(q); }}
+              className="shrink-0 px-2.5 py-1 rounded-full text-[9px] font-bold bg-secondary text-muted-foreground hover:bg-primary/20 hover:text-primary transition-colors">
+              {q}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Filter chips */}
-      <div className="flex gap-2 px-4 mt-3 overflow-x-auto hide-scrollbar pb-2">
-        {([
-          { key: "all", icon: "layers", label: "All" },
-          { key: "listed", icon: "verified", label: "Listed Only" },
-          { key: "shareholders", icon: "people", label: "Shareholders" },
-          { key: "subsidiaries", icon: "account_tree", label: "Subsidiaries" },
-          { key: "risk", icon: "shield", label: "Risk Flagged" },
-        ] as { key: FilterType; icon: string; label: string }[]).map(f => (
-          <button
-            key={f.key}
-            onClick={() => setFilter(f.key)}
-            className={`flex h-8 shrink-0 items-center gap-2 rounded-full px-3 transition-colors ${
-              filter === f.key
-                ? "bg-primary/20 border border-primary/40"
-                : "glass-panel"
-            }`}
-          >
-            <span className={`material-symbols-outlined text-sm ${filter === f.key ? "text-primary" : "text-muted-foreground"}`}>{f.icon}</span>
-            <span className={`text-xs font-medium ${filter === f.key ? "text-primary" : "text-foreground"}`}>{f.label}</span>
-          </button>
-        ))}
-      </div>
+      {forensicData && (
+        <div className="flex gap-2 px-4 mt-3 overflow-x-auto hide-scrollbar pb-2">
+          {([
+            { key: "all", icon: "layers", label: "All" },
+            { key: "listed", icon: "verified", label: "Listed" },
+            { key: "shareholders", icon: "people", label: "Shareholders" },
+            { key: "subsidiaries", icon: "account_tree", label: "Subsidiaries" },
+            { key: "risk", icon: "shield", label: "Risk" },
+          ] as { key: FilterType; icon: string; label: string }[]).map(f => (
+            <button key={f.key} onClick={() => setFilter(f.key)}
+              className={`flex h-8 shrink-0 items-center gap-2 rounded-full px-3 transition-colors ${
+                filter === f.key ? "bg-primary/20 border border-primary/40" : "glass-panel"
+              }`}>
+              <span className={`material-symbols-outlined text-sm ${filter === f.key ? "text-primary" : "text-muted-foreground"}`}>{f.icon}</span>
+              <span className={`text-xs font-medium ${filter === f.key ? "text-primary" : "text-foreground"}`}>{f.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Graph area */}
       <div className="flex-1 relative graph-background mx-4 mt-3 rounded-2xl overflow-hidden glass-panel">
@@ -234,15 +205,16 @@ export default function NetworkPage() {
             <p className="text-xs text-muted-foreground max-w-xs">
               Search any Bursa Malaysia entity to visualize ownership structures, shareholders, subsidiaries, and director networks.
             </p>
+            <p className="text-[9px] text-muted-foreground mt-2">Try: MAYBANK, CIMB, TENAGA, PETRONAS</p>
           </div>
         )}
 
         {/* Loading */}
-        {isLoading && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
+        {(isLoading || isFetching) && searchEntity && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center z-30 bg-background/50">
             <span className="material-symbols-outlined text-primary text-3xl animate-spin">progress_activity</span>
-            <p className="text-xs text-muted-foreground mt-3">Searching corporate records...</p>
-            <p className="text-[9px] text-muted-foreground mt-1">Analyzing ownership structure via AI</p>
+            <p className="text-xs text-muted-foreground mt-3">Analyzing {searchEntity}...</p>
+            <p className="text-[9px] text-muted-foreground mt-1">Scraping ownership data & AI processing</p>
           </div>
         )}
 
@@ -250,14 +222,15 @@ export default function NetworkPage() {
         {error && !isLoading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center p-8">
             <span className="material-symbols-outlined text-destructive text-3xl mb-3">error</span>
-            <p className="text-xs text-muted-foreground text-center">Failed to load forensic data. Try again.</p>
+            <p className="text-xs text-muted-foreground text-center">Failed to load forensic data.</p>
+            <button onClick={() => setSearchEntity(searchQuery.trim() || null)}
+              className="mt-3 text-xs text-primary font-bold">Retry</button>
           </div>
         )}
 
-        {/* Graph rendering */}
+        {/* Graph */}
         {forensicData && !isLoading && (
           <div className="absolute inset-0" style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}>
-            {/* SVG edges with labels */}
             <svg className="absolute inset-0 w-full h-full pointer-events-none">
               {filteredEdges.map((e, i) => {
                 const fromNode = filteredNodes.find(n => n.id === e.from);
@@ -268,50 +241,30 @@ export default function NetworkPage() {
                 const midY = (fromNode.y + toNode.y) / 2;
                 return (
                   <g key={i}>
-                    <line
-                      x1={`${fromNode.x}%`} y1={`${fromNode.y}%`}
-                      x2={`${toNode.x}%`} y2={`${toNode.y}%`}
-                      stroke={isRisk ? "hsl(var(--destructive))" : "hsl(var(--primary))"}
-                      strokeWidth={isRisk ? 2.5 : 1.5}
-                      strokeOpacity={0.5}
-                      strokeDasharray={fromNode.type === "person" ? "4,4" : "none"}
-                    />
-                    {/* Edge label */}
-                    <text
-                      x={`${midX}%`} y={`${midY}%`}
-                      textAnchor="middle"
-                      dominantBaseline="middle"
-                      fill="hsl(var(--muted-foreground))"
-                      fontSize="7"
-                      fontWeight="600"
-                    >
-                      {e.label}
-                    </text>
+                    <line x1={`${fromNode.x}%`} y1={`${fromNode.y}%`} x2={`${toNode.x}%`} y2={`${toNode.y}%`}
+                      stroke={isRisk ? "hsl(var(--destructive))" : "hsl(var(--primary))"} strokeWidth={isRisk ? 2.5 : 1.5}
+                      strokeOpacity={0.5} strokeDasharray={fromNode.type === "person" ? "4,4" : "none"} />
+                    <text x={`${midX}%`} y={`${midY}%`} textAnchor="middle" dominantBaseline="middle"
+                      fill="hsl(var(--muted-foreground))" fontSize="7" fontWeight="600">{e.label}</text>
                   </g>
                 );
               })}
             </svg>
 
-            {/* Nodes */}
             {filteredNodes.map((node) => {
               const colors = NODE_COLORS[node.type];
               const isCenter = node.id === "center";
               const hasRiskFlag = forensicData.riskFlags && forensicData.riskFlags.length > 0 && isCenter;
               return (
-                <button
-                  key={node.id}
-                  onClick={() => { setSelectedNode(node.id); setDrawerOpen(true); }}
+                <button key={node.id} onClick={() => { setSelectedNode(node.id); setDrawerOpen(true); }}
                   className="absolute z-10 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center gap-0.5 group"
-                  style={{ left: `${node.x}%`, top: `${node.y}%` }}
-                >
+                  style={{ left: `${node.x}%`, top: `${node.y}%` }}>
                   <div className={`${isCenter ? "h-16 w-16" : "h-10 w-10"} rounded-full ${colors.bg} border-2 ${colors.border} flex items-center justify-center transition-transform group-hover:scale-110 ${
                     hasRiskFlag ? "ring-2 ring-destructive ring-offset-2 ring-offset-background" : isCenter ? "glow-primary" : ""
                   }`}>
                     <span className={`material-symbols-outlined ${isCenter ? "text-lg" : "text-xs"}`}>
-                      {node.type === "person" ? "person" :
-                       node.type === "shareholder" ? "account_balance" :
-                       node.type === "listed" ? "verified" :
-                       node.type === "risk" ? "warning" :
+                      {node.type === "person" ? "person" : node.type === "shareholder" ? "account_balance" :
+                       node.type === "listed" ? "verified" : node.type === "risk" ? "warning" :
                        node.type === "subsidiary" ? "business" : "corporate_fare"}
                     </span>
                   </div>
@@ -319,9 +272,7 @@ export default function NetworkPage() {
                     {node.label}
                   </span>
                   {node.percentage != null && (
-                    <span className="text-[6px] text-primary font-mono bg-primary/10 px-1 rounded">
-                      {node.percentage}%
-                    </span>
+                    <span className="text-[6px] text-primary font-mono bg-primary/10 px-1 rounded">{node.percentage}%</span>
                   )}
                   {node.isListed && !isCenter && (
                     <span className="text-[5px] font-bold text-info bg-info/10 px-1 rounded uppercase">Listed</span>
@@ -354,15 +305,22 @@ export default function NetworkPage() {
             <div className="flex items-center gap-1.5"><div className="w-2 h-2 rounded-full bg-destructive" /><span className="text-[7px] text-muted-foreground">Risk</span></div>
           </div>
         )}
+
+        {/* Data source stamp */}
+        {forensicData?.sources && forensicData.sources.length > 0 && (
+          <div className="absolute right-3 top-3 z-20">
+            <span className="text-[7px] text-muted-foreground bg-background/80 px-1.5 py-0.5 rounded">
+              Sources: {forensicData.sources.length}
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Detail drawer */}
       <AnimatePresence>
         {drawerOpen && selectedNodeData && forensicData && (
           <motion.div
-            initial={{ y: "100%" }}
-            animate={{ y: 0 }}
-            exit={{ y: "100%" }}
+            initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
             className="fixed bottom-20 left-0 right-0 z-40 glass-panel rounded-t-2xl border-t border-glass-border p-5 max-h-[55vh] overflow-y-auto"
           >
             <div className="flex justify-between items-start mb-4">
@@ -384,7 +342,6 @@ export default function NetworkPage() {
 
             {selectedNodeData.id === "center" ? (
               <>
-                {/* Entity details */}
                 <div className="grid grid-cols-2 gap-2 mb-4">
                   <div className="bg-secondary p-2.5 rounded-lg">
                     <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Country</p>
@@ -396,7 +353,6 @@ export default function NetworkPage() {
                   </div>
                 </div>
 
-                {/* Risk flags */}
                 {forensicData.riskFlags && forensicData.riskFlags.length > 0 && (
                   <>
                     <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2 text-destructive">Risk Flags</h4>
@@ -411,33 +367,29 @@ export default function NetworkPage() {
                   </>
                 )}
 
-                {/* Directors */}
                 {forensicData.directors && forensicData.directors.length > 0 && (
                   <>
-                    <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2 border-t border-glass-border pt-3">Directors</h4>
+                    <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2">Directors</h4>
                     <div className="space-y-1.5 mb-4">
                       {forensicData.directors.map((d, i) => (
-                        <div key={i} className="flex items-center justify-between">
-                          <div>
-                            <span className="text-[10px] font-medium">{d.name}</span>
-                            <span className="text-[8px] text-muted-foreground ml-2">{d.position}</span>
-                          </div>
+                        <div key={i} className="bg-secondary p-2 rounded-lg">
+                          <p className="text-[10px] font-bold">{d.name}</p>
+                          <p className="text-[9px] text-muted-foreground">{d.position}</p>
+                          {d.otherDirectorships?.length > 0 && (
+                            <p className="text-[8px] text-primary mt-0.5">Also: {d.otherDirectorships.join(", ")}</p>
+                          )}
                         </div>
                       ))}
                     </div>
                   </>
                 )}
 
-                {/* Sources */}
                 {forensicData.sources && forensicData.sources.length > 0 && (
                   <>
-                    <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2 border-t border-glass-border pt-3 text-muted-foreground">Sources</h4>
-                    <div className="space-y-1">
-                      {forensicData.sources.map((s, i) => (
-                        <a key={i} href={s} target="_blank" rel="noopener noreferrer"
-                          className="text-[8px] text-primary truncate block hover:underline">{s}</a>
-                      ))}
-                    </div>
+                    <h4 className="text-[10px] font-bold uppercase tracking-wider mb-2">Sources</h4>
+                    {forensicData.sources.map((s, i) => (
+                      <p key={i} className="text-[8px] text-primary truncate mb-0.5">{s}</p>
+                    ))}
                   </>
                 )}
               </>
@@ -446,14 +398,19 @@ export default function NetworkPage() {
                 {selectedNodeData.percentage != null && (
                   <div className="bg-secondary p-2.5 rounded-lg">
                     <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Ownership</p>
-                    <p className="text-lg font-bold">{selectedNodeData.percentage}%</p>
+                    <p className="text-lg font-bold text-primary">{selectedNodeData.percentage}%</p>
                   </div>
                 )}
                 <div className="bg-secondary p-2.5 rounded-lg">
                   <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Type</p>
                   <p className="text-xs font-bold capitalize">{selectedNodeData.type}</p>
                 </div>
-                <p className="text-[9px] text-muted-foreground mt-3">No further public ownership data available for this entity.</p>
+                {selectedNodeData.layer && (
+                  <div className="bg-secondary p-2.5 rounded-lg">
+                    <p className="text-[9px] text-muted-foreground uppercase font-bold mb-0.5">Relationship</p>
+                    <p className="text-xs font-bold capitalize">{selectedNodeData.layer}</p>
+                  </div>
+                )}
               </div>
             )}
           </motion.div>

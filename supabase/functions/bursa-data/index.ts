@@ -3,7 +3,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
+// Extended ticker list: Large, Mid, Small, Penny, Warrants
 const BURSA_TICKERS = [
+  // Large Cap
   { symbol: "1155.KL", name: "MAYBANK", sector: "Finance", cap: "Large" },
   { symbol: "1295.KL", name: "PBBANK", sector: "Finance", cap: "Large" },
   { symbol: "5347.KL", name: "TENAGA", sector: "Utilities", cap: "Large" },
@@ -15,6 +17,11 @@ const BURSA_TICKERS = [
   { symbol: "5183.KL", name: "PETGAS", sector: "Energy", cap: "Large" },
   { symbol: "4707.KL", name: "NESTLE", sector: "Consumer", cap: "Large" },
   { symbol: "5225.KL", name: "IHH", sector: "Healthcare", cap: "Large" },
+  { symbol: "1082.KL", name: "HLBANK", sector: "Finance", cap: "Large" },
+  { symbol: "6888.KL", name: "AXIATA", sector: "Telecom", cap: "Large" },
+  { symbol: "4197.KL", name: "SIME", sector: "Plantation", cap: "Large" },
+  { symbol: "5681.KL", name: "PETRONAS", sector: "Energy", cap: "Large" },
+  // Mid Cap
   { symbol: "0166.KL", name: "INARI", sector: "Technology", cap: "Mid" },
   { symbol: "7113.KL", name: "TOPGLOVE", sector: "Healthcare", cap: "Mid" },
   { symbol: "6012.KL", name: "MAXIS", sector: "Telecom", cap: "Mid" },
@@ -22,22 +29,36 @@ const BURSA_TICKERS = [
   { symbol: "4715.KL", name: "GENM", sector: "Consumer", cap: "Mid" },
   { symbol: "5218.KL", name: "SAPNRG", sector: "Energy", cap: "Mid" },
   { symbol: "0138.KL", name: "MYEG", sector: "Technology", cap: "Mid" },
+  { symbol: "2445.KL", name: "KLK", sector: "Plantation", cap: "Mid" },
+  { symbol: "6947.KL", name: "DIGI", sector: "Telecom", cap: "Mid" },
+  { symbol: "5235.KL", name: "MISC", sector: "Transport", cap: "Mid" },
+  { symbol: "4677.KL", name: "YTL", sector: "Utilities", cap: "Mid" },
+  { symbol: "4065.KL", name: "PPB", sector: "Consumer", cap: "Mid" },
+  // Small Cap
   { symbol: "0128.KL", name: "FRONTKN", sector: "Technology", cap: "Small" },
   { symbol: "5243.KL", name: "VELESTO", sector: "Energy", cap: "Small" },
   { symbol: "0097.KL", name: "VITROX", sector: "Technology", cap: "Small" },
   { symbol: "5005.KL", name: "UNISEM", sector: "Technology", cap: "Small" },
   { symbol: "3867.KL", name: "MPI", sector: "Technology", cap: "Small" },
   { symbol: "5199.KL", name: "HIBISCUS", sector: "Energy", cap: "Small" },
-  { symbol: "2445.KL", name: "KLK", sector: "Plantation", cap: "Mid" },
+  { symbol: "7153.KL", name: "KOSSAN", sector: "Healthcare", cap: "Small" },
+  { symbol: "7084.KL", name: "QL", sector: "Consumer", cap: "Small" },
+  { symbol: "5819.KL", name: "HEXIND", sector: "Property", cap: "Small" },
+  // Penny / Cheap stocks
+  { symbol: "0078.KL", name: "GTRONIC", sector: "Technology", cap: "Penny" },
+  { symbol: "0041.KL", name: "MTRONIC", sector: "Technology", cap: "Penny" },
+  { symbol: "7183.KL", name: "IDEAGLOBAL", sector: "Technology", cap: "Penny" },
+  { symbol: "0047.KL", name: "DESTINI", sector: "Energy", cap: "Penny" },
+  { symbol: "0104.KL", name: "EDGENTA", sector: "Services", cap: "Small" },
+  { symbol: "7277.KL", name: "DIALOG", sector: "Energy", cap: "Mid" },
+  { symbol: "2828.KL", name: "BPLANT", sector: "Plantation", cap: "Small" },
+  { symbol: "5202.KL", name: "MSM", sector: "Consumer", cap: "Small" },
 ];
 
 async function fetchYahooChart(symbol: string, interval = '5m', range = '1d') {
-  // Use query2 + v8 which is still working
   const url = `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}&includePrePost=false`;
   const res = await fetch(url, {
-    headers: { 
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    },
+    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' },
   });
   if (!res.ok) {
     const text = await res.text();
@@ -48,7 +69,6 @@ async function fetchYahooChart(symbol: string, interval = '5m', range = '1d') {
 
 async function fetchMultipleCharts(symbols: string[]) {
   const results = [];
-  // Batch in groups of 5 to avoid rate limiting
   for (let i = 0; i < symbols.length; i += 5) {
     const batch = symbols.slice(i, i + 5);
     const promises = batch.map(async (sym) => {
@@ -60,15 +80,11 @@ async function fetchMultipleCharts(symbols: string[]) {
         const meta = result.meta;
         const quotes = result.indicators?.quote?.[0];
         const timestamps = result.timestamp || [];
-        
-        // Get latest values
         const lastIdx = timestamps.length - 1;
         const prevClose = meta.chartPreviousClose || meta.previousClose;
         const currentPrice = meta.regularMarketPrice;
         const change = currentPrice - prevClose;
         const changePct = prevClose ? (change / prevClose) * 100 : 0;
-
-        // Calculate volume avg from last 5 days
         const volumes = quotes?.volume?.filter((v: number | null) => v != null) || [];
         const avgVolume = volumes.length > 0 ? volumes.reduce((a: number, b: number) => a + b, 0) / volumes.length : 0;
         const latestVolume = meta.regularMarketVolume || (volumes.length > 0 ? volumes[volumes.length - 1] : 0);
@@ -92,11 +108,8 @@ async function fetchMultipleCharts(symbols: string[]) {
         return null;
       }
     });
-    
     const batchResults = await Promise.all(promises);
     results.push(...batchResults.filter(Boolean));
-    
-    // Small delay between batches
     if (i + 5 < symbols.length) {
       await new Promise(r => setTimeout(r, 200));
     }
@@ -114,7 +127,6 @@ Deno.serve(async (req) => {
     const { action, symbol, interval, range } = body;
 
     if (action === 'market_overview') {
-      // Fetch KLCI index
       let klciData = null;
       try {
         const klciChart = await fetchYahooChart('^KLSE', '1d', '5d');
@@ -133,7 +145,6 @@ Deno.serve(async (req) => {
         console.error('Failed to fetch KLCI:', e.message);
       }
 
-      // Fetch all stock quotes
       const allSymbols = BURSA_TICKERS.map(t => t.symbol);
       const quotes = await fetchMultipleCharts(allSymbols);
 
@@ -151,7 +162,6 @@ Deno.serve(async (req) => {
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
 
-      // Fetch 1-day chart for detail view
       const chartData = await fetchYahooChart(symbol, interval || '5m', range || '1d');
       const result = chartData?.chart?.result?.[0];
       const ticker = BURSA_TICKERS.find(t => t.symbol === symbol);
@@ -182,7 +192,7 @@ Deno.serve(async (req) => {
           timestamps: result.timestamp,
           quotes: result.indicators?.quote?.[0],
         },
-        tickerInfo: ticker,
+        tickerInfo: ticker || { symbol, name: meta.shortName || symbol, sector: 'Unknown', cap: 'Unknown' },
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
@@ -191,21 +201,15 @@ Deno.serve(async (req) => {
         return new Response(JSON.stringify({ success: false, error: 'Symbol required' }),
           { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
       }
-
       const chartData = await fetchYahooChart(symbol, interval || '5m', range || '1d');
       const result = chartData?.chart?.result?.[0];
-
       return new Response(JSON.stringify({
         success: true,
-        chart: result ? {
-          timestamps: result.timestamp,
-          quotes: result.indicators?.quote?.[0],
-          meta: result.meta,
-        } : null,
+        chart: result ? { timestamps: result.timestamp, quotes: result.indicators?.quote?.[0], meta: result.meta } : null,
       }), { headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
     }
 
-    return new Response(JSON.stringify({ success: false, error: 'Invalid action. Use: market_overview, stock_detail, chart' }),
+    return new Response(JSON.stringify({ success: false, error: 'Invalid action' }),
       { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
   } catch (error) {
     console.error('Error in bursa-data:', error);
