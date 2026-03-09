@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { aiProviderStore } from "@/lib/ai/provider-store";
 
 // ===================== TYPES =====================
 
@@ -185,6 +186,17 @@ export interface QFEAnalysis {
   disclaimer: string;
 }
 
+// ===================== AI CONFIG HELPER =====================
+
+function getAIConfig() {
+  const cfg = aiProviderStore.getRequestConfig();
+  return {
+    provider: cfg.provider,
+    model: cfg.model,
+    apiKey: cfg.apiKey,
+  };
+}
+
 // ===================== API =====================
 
 export const bursaApi = {
@@ -230,9 +242,10 @@ export const bursaApi = {
     return data;
   },
 
+  // All AI-powered calls now route through the provider switcher
   async analyzeStock(stockData: any, newsContext?: string): Promise<StockAnalysis | null> {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
-      body: { action: 'analyze_stock', stockData, newsContext },
+      body: { action: 'analyze_stock', stockData, newsContext, aiConfig: getAIConfig() },
     });
     if (error) throw new Error(error.message);
     return data?.analysis || null;
@@ -240,7 +253,7 @@ export const bursaApi = {
 
   async getDailySuggestions(stockData: any) {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
-      body: { action: 'daily_suggestions', stockData },
+      body: { action: 'daily_suggestions', stockData, aiConfig: getAIConfig() },
     });
     if (error) throw new Error(error.message);
     return data;
@@ -248,7 +261,7 @@ export const bursaApi = {
 
   async getMacroAnalysis(context?: string, stockData?: any) {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
-      body: { action: 'macro_analysis', macroContext: context, stockData },
+      body: { action: 'macro_analysis', macroContext: context, stockData, aiConfig: getAIConfig() },
     });
     if (error) throw new Error(error.message);
     return data;
@@ -256,7 +269,7 @@ export const bursaApi = {
 
   async getForensicData(entity: string): Promise<ForensicData | null> {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
-      body: { action: 'forensic_search', stockData: { entity } },
+      body: { action: 'forensic_search', stockData: { entity }, aiConfig: getAIConfig() },
     });
     if (error) throw new Error(error.message);
     return data?.forensic || null;
@@ -264,7 +277,7 @@ export const bursaApi = {
 
   async getQFEAnalysis(stockData: any, newsContext?: string, macroContext?: string): Promise<QFEAnalysis | null> {
     const { data, error } = await supabase.functions.invoke('bursa-intelligence', {
-      body: { action: 'qfe_analysis', stockData, newsContext, macroContext },
+      body: { action: 'qfe_analysis', stockData, newsContext, macroContext, aiConfig: getAIConfig() },
     });
     if (error) throw new Error(error.message);
     return data?.qfe || null;
