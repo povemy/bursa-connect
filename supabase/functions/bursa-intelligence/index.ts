@@ -3,28 +3,113 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version',
 };
 
-const AI_URL = 'https://ai.gateway.lovable.dev/v1/chat/completions';
+const AI_GATEWAY_URL = 'https://ai.gateway.lovable.dev/v1/chat/completions';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+const OPENAI_API_URL = 'https://api.openai.com/v1/chat/completions';
+const OPENROUTER_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
-async function callAI(apiKey: string, prompt: string, model = 'google/gemini-2.5-flash') {
-  const res = await fetch(AI_URL, {
+// ===================== AI ROUTER =====================
+// Central routing layer — ALL AI calls flow through here
+
+interface AIRouteConfig {
+  provider: string;
+  model?: string;
+  apiKey?: string;
+}
+
+async function routeAICall(config: AIRouteConfig, prompt: string, lovableApiKey: string): Promise<string> {
+  const { provider, model, apiKey } = config;
+
+  // Fallback chain: selected provider → Lovable AI
+  try {
+    switch (provider) {
+      case 'gemini':
+        if (apiKey) return await callGemini(apiKey, prompt, model || 'gemini-2.5-flash');
+        break;
+      case 'openai':
+        if (apiKey) return await callOpenAI(apiKey, prompt, model || 'gpt-4o-mini');
+        break;
+      case 'openrouter':
+        if (apiKey) return await callOpenRouter(apiKey, prompt, model || 'google/gemini-2.5-flash-preview');
+        break;
+      case 'lovable':
+      default:
+        return await callLovableAI(lovableApiKey, prompt, model || 'google/gemini-2.5-flash');
+    }
+  } catch (providerError) {
+    console.error(`Provider ${provider} failed, falling back to Lovable AI:`, providerError.message);
+    // Fallback to Lovable AI
+  }
+
+  // Default fallback
+  return await callLovableAI(lovableApiKey, prompt, 'google/gemini-2.5-flash');
+}
+
+async function callLovableAI(apiKey: string, prompt: string, model: string): Promise<string> {
+  const res = await fetch(AI_GATEWAY_URL, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      model,
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.3,
-    }),
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0.3 }),
   });
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(`AI call failed: ${res.status} - ${text.substring(0, 200)}`);
+    throw new Error(`Lovable AI failed: ${res.status} - ${text.substring(0, 200)}`);
   }
   const data = await res.json();
   return data.choices?.[0]?.message?.content || '';
 }
+
+async function callGemini(apiKey: string, prompt: string, model: string): Promise<string> {
+  const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.3 },
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Gemini failed: ${res.status} - ${text.substring(0, 200)}`);
+  }
+  const data = await res.json();
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+}
+
+async function callOpenAI(apiKey: string, prompt: string, model: string): Promise<string> {
+  const res = await fetch(OPENAI_API_URL, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0.3 }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`OpenAI failed: ${res.status} - ${text.substring(0, 200)}`);
+  }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
+async function callOpenRouter(apiKey: string, prompt: string, model: string): Promise<string> {
+  const res = await fetch(OPENROUTER_API_URL, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://insight-forensic.lovable.app',
+    },
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], temperature: 0.3 }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`OpenRouter failed: ${res.status} - ${text.substring(0, 200)}`);
+  }
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
+// ===================== HELPERS =====================
 
 function parseJSON(result: string, fallback: any) {
   try {
@@ -42,18 +127,31 @@ function jsonResponse(data: any, status = 200) {
   });
 }
 
+// ===================== MAIN HANDLER =====================
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const apiKey = Deno.env.get('LOVABLE_API_KEY');
-    if (!apiKey) {
+    const lovableApiKey = Deno.env.get('LOVABLE_API_KEY');
+    if (!lovableApiKey) {
       return jsonResponse({ success: false, error: 'AI not configured' }, 500);
     }
 
-    const { action, stockData, newsContext, macroContext } = await req.json();
+    const body = await req.json();
+    const { action, stockData, newsContext, macroContext, aiConfig } = body;
+
+    // Build route config from request (provider preference sent from client)
+    const routeConfig: AIRouteConfig = {
+      provider: aiConfig?.provider || 'lovable',
+      model: aiConfig?.model,
+      apiKey: aiConfig?.apiKey,
+    };
+
+    // Log provider usage
+    console.log(`[AI Router] Action: ${action} | Provider: ${routeConfig.provider} | Model: ${routeConfig.model || 'default'}`);
 
     // ===================== ANALYZE STOCK =====================
     if (action === 'analyze_stock') {
@@ -101,13 +199,12 @@ Return this exact JSON structure:
 
 Base analysis on: price action, volume patterns, sector context, and any available news. Avoid look-ahead bias. Be time-sensitive using only provided data.`;
 
-      const result = await callAI(apiKey, prompt);
+      const result = await routeAICall(routeConfig, prompt, lovableApiKey);
       const parsed = parseJSON(result, { error: 'Failed to parse AI response', raw: result.substring(0, 500) });
-
-      return jsonResponse({ success: true, analysis: parsed });
+      return jsonResponse({ success: true, analysis: parsed, provider: routeConfig.provider });
     }
 
-    // ===================== DAILY SUGGESTIONS (RETAIL MODE) =====================
+    // ===================== DAILY SUGGESTIONS =====================
     if (action === 'daily_suggestions') {
       const prompt = `You are a Bursa Malaysia trading intelligence AI for RETAIL TRADERS with small capital.
 
@@ -161,13 +258,12 @@ Return ONLY valid JSON:
   "marketSummary": "<2-3 lines overall market assessment>"
 }`;
 
-      const result = await callAI(apiKey, prompt);
+      const result = await routeAICall(routeConfig, prompt, lovableApiKey);
       const parsed = parseJSON(result, { suggestions: [], trapList: [], marketSummary: 'Analysis unavailable' });
-
-      return jsonResponse({ success: true, ...parsed });
+      return jsonResponse({ success: true, ...parsed, provider: routeConfig.provider });
     }
 
-    // ===================== MACRO ANALYSIS (WITH STOCK TAGS) =====================
+    // ===================== MACRO ANALYSIS =====================
     if (action === 'macro_analysis') {
       const prompt = `You are a global macro analyst focused on Bursa Malaysia impact. Analyze current macro factors and MAP them to specific Bursa stocks.
 
@@ -201,13 +297,12 @@ Return ONLY valid JSON:
   "overallSummary": "<3 line market macro outlook>"
 }`;
 
-      const result = await callAI(apiKey, prompt);
+      const result = await routeAICall(routeConfig, prompt, lovableApiKey);
       const parsed = parseJSON(result, { factors: [], overallBias: 'Neutral', overallSummary: 'Analysis unavailable' });
-
-      return jsonResponse({ success: true, ...parsed });
+      return jsonResponse({ success: true, ...parsed, provider: routeConfig.provider });
     }
 
-    // ===================== QFE (QUANT FUSION ENGINE) =====================
+    // ===================== QFE =====================
     if (action === 'qfe_analysis') {
       const prompt = `You are the Quant Fusion Engine (QFE) — the FINAL probabilistic decision engine for a Bursa Malaysia stock.
 
@@ -269,10 +364,9 @@ Return ONLY valid JSON:
   "disclaimer": "Probabilistic analysis only. Not financial advice."
 }`;
 
-      const result = await callAI(apiKey, prompt);
+      const result = await routeAICall(routeConfig, prompt, lovableApiKey);
       const parsed = parseJSON(result, { error: 'QFE analysis failed', raw: result.substring(0, 500) });
-
-      return jsonResponse({ success: true, qfe: parsed });
+      return jsonResponse({ success: true, qfe: parsed, provider: routeConfig.provider });
     }
 
     // ===================== FORENSIC SEARCH =====================
@@ -283,18 +377,13 @@ Return ONLY valid JSON:
       }
 
       const { entity } = stockData;
-
-      // Search for ownership data with timeout
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 15000);
 
       try {
         const searchRes = await fetch('https://api.firecrawl.dev/v1/search', {
           method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${firecrawlKey}`,
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Authorization': `Bearer ${firecrawlKey}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             query: `${entity} Malaysia corporate ownership shareholders subsidiaries directors Bursa`,
             limit: 5,
@@ -328,23 +417,22 @@ Return:
 }
 Only include data verified from sources. Mark unknown as null.`;
 
-        const aiResult = await callAI(apiKey, forensicPrompt);
+        const aiResult = await routeAICall(routeConfig, forensicPrompt, lovableApiKey);
         const forensicData = parseJSON(aiResult, {
           entity: { name: entity }, shareholders: [], subsidiaries: [], directors: [], riskFlags: [], sources: []
         });
 
-        return jsonResponse({ success: true, forensic: forensicData });
+        return jsonResponse({ success: true, forensic: forensicData, provider: routeConfig.provider });
       } catch (e) {
         clearTimeout(timeout);
         if (e.name === 'AbortError') {
-          // Timeout - try AI-only fallback without web scraping
           const fallbackPrompt = `Based on your knowledge, provide the corporate ownership structure for "${entity}" (a Malaysian/Bursa Malaysia entity). Return ONLY valid JSON with the same structure: entity, shareholders, subsidiaries, directors, riskFlags, sources. Mark unverified data clearly. Sources should say ["AI Knowledge Base"].`;
-          const fallbackResult = await callAI(apiKey, fallbackPrompt);
+          const fallbackResult = await routeAICall(routeConfig, fallbackPrompt, lovableApiKey);
           const fallbackData = parseJSON(fallbackResult, {
             entity: { name: entity, isListed: true, country: 'Malaysia' },
             shareholders: [], subsidiaries: [], directors: [], riskFlags: ['Data from AI knowledge - verify independently'], sources: ['AI Knowledge Base']
           });
-          return jsonResponse({ success: true, forensic: fallbackData });
+          return jsonResponse({ success: true, forensic: fallbackData, provider: routeConfig.provider });
         }
         throw e;
       }
